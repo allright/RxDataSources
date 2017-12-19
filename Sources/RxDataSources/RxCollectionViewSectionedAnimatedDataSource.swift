@@ -54,42 +54,44 @@ open class RxCollectionViewSectionedAnimatedDataSource<S: AnimatableSectionModel
         )
 
         self.updateEvent
+            .map({ (updates) -> (RxCollectionViewSectionedAnimatedDataSource<S>,UICollectionView, [SectionModelSnapshot]) in
+                let (dataSource, collectionView, newSections) = updates
+                return (dataSource, collectionView, newSections.map { SectionModelSnapshot(model: $0, items: $0.items) })
+            })
             //.observeOn(scheduler) // updateEvent already called on sheduler!
             .scan(nil, accumulator: { (accum, updates) -> (RxCollectionViewSectionedAnimatedDataSource<S>,UICollectionView,[Changeset<S>], [SectionModelSnapshot], Bool) in
-                let (dataSource, collectionView, newSections) = updates
+                let (dataSource, collectionView, newSectionsModel) = updates
 
-                if let (_, _, _, sectionModels,_) = accum {
-                    NSLog("next!")
-                    let oldSections = sectionModels.map { Section(original: $0.model, items: $0.items) }
+                if let (_, _, _, oldSections,_) = accum {
                     do {
-                        let differences = try Diff.differencesForSectionedView(initialSections: oldSections, finalSections: newSections)
+                        let differences = try Diff.differencesForSectionedView(initialSections: oldSections.map { Section(original: $0.model, items: $0.items) },
+                                                                               finalSections: newSectionsModel.map { Section(original: $0.model, items: $0.items) })
                         let reloadAllFalse = false
-                        return (dataSource,collectionView,differences,newSections.map { SectionModelSnapshot(model: $0, items: $0.items) },reloadAllFalse)
+                        return (dataSource,collectionView,differences,newSectionsModel,reloadAllFalse)
                     }catch let e {
                         #if DEBUG
                             print("Error while calculating differences.")
                             rxDebugFatalError(e)
                         #endif
                         let reloadAllTrue = true
-                        return (dataSource,collectionView,[Changeset<S>](),oldSections.map { SectionModelSnapshot(model: $0, items: $0.items) }, reloadAllTrue)
+                        return (dataSource,collectionView,[Changeset<S>](),oldSections, reloadAllTrue)
                     }
                 }else {
-                    NSLog("init!")
                     let reloadAll = true
-                    return (dataSource, collectionView,[Changeset<S>](),newSections.map { SectionModelSnapshot(model: $0, items: $0.items) }, reloadAll)
+                    return (dataSource, collectionView,[Changeset<S>](),newSectionsModel, reloadAll)
                 }
             })
             .observeOn(MainScheduler.asyncInstance)
             .throttle(0.5, scheduler: MainScheduler.instance)
             .subscribe(onNext:{ event in
-                let (dataSource,collectionView, differences, newSections, reloadAll) = event!
+                let (dataSource, collectionView, differences, newSections, reloadAll) = event!
 
                 if collectionView.window == nil || reloadAll {
-                    dataSource.setSections(newSections.map { Section(original: $0.model, items: $0.items) })
+                    dataSource.setSectionModels(newSections)
                     collectionView.reloadData()
                     return
                 }
-              
+                
                 switch dataSource.decideViewTransition(dataSource, collectionView, differences) {
                 case .animated:
                     for difference in differences {
@@ -97,7 +99,7 @@ open class RxCollectionViewSectionedAnimatedDataSource<S: AnimatableSectionModel
                         collectionView.performBatchUpdates(difference, animationConfiguration: dataSource.animationConfiguration)
                     }
                 case .reload:
-                    dataSource.setSections(newSections.map { Section(original: $0.model, items: $0.items) })
+                    dataSource.setSectionModels(newSections)
                     collectionView.reloadData()
                 }
                 
@@ -113,44 +115,7 @@ open class RxCollectionViewSectionedAnimatedDataSource<S: AnimatableSectionModel
     
     typealias UpdateEventType = (RxCollectionViewSectionedAnimatedDataSource<S>,UICollectionView, Element)
     private let updateEvent = PublishSubject<UpdateEventType>()
-    /**
-     This method exists because collection view updates are throttled because of internal collection view bugs.
-     Collection view behaves poorly during fast updates, so this should remedy those issues.
-    */
-    open func collectionView(_ collectionView: UICollectionView, throttledObservedEvent event: Event<Element>) {
-        Binder(self) { dataSource, newSections in
-            let oldSections = dataSource.sectionModels
-            do {
-                // if view is not in view hierarchy, performing batch updates will crash the app
-                if collectionView.window == nil {
-                    dataSource.setSections(newSections)
-                    collectionView.reloadData()
-                    return
-                }
-                let differences = try Diff.differencesForSectionedView(initialSections: oldSections, finalSections: newSections)
 
-                switch self.decideViewTransition(self, collectionView, differences) {
-                case .animated:
-                    for difference in differences {
-                        dataSource.setSections(difference.finalSections)
-
-                        collectionView.performBatchUpdates(difference, animationConfiguration: self.animationConfiguration)
-                    }
-                case .reload:
-                    self.setSections(newSections)
-                    collectionView.reloadData()
-                }
-            }
-            catch let e {
-                #if DEBUG
-                    print("Error while binding data animated: \(e)\nFallback to normal `reloadData` behavior.")
-                    rxDebugFatalError(e)
-                #endif
-                self.setSections(newSections)
-                collectionView.reloadData()
-            }
-        }.on(event)
-    }
 
     open func collectionView(_ collectionView: UICollectionView, observedEvent: Event<Element> ) {
         Binder(self,scheduler: self.scheduler) { dataSource, newSections in

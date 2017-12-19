@@ -88,6 +88,10 @@ open class CollectionViewSectionedDataSource<S: SectionModelType>
         self._sectionModels = sections.map { SectionModelSnapshot(model: $0, items: $0.items) }
     }
     
+    open func setSectionModels(_ sectionModels: [SectionModelSnapshot]) {
+        self._sectionModels = sectionModels
+    }
+    
     open var configureCell: ConfigureCell {
         didSet {
             #if DEBUG
