@@ -79,25 +79,6 @@ open class RxCollectionViewSectionedAnimatedDataSource<S: AnimatableSectionModel
                     return (dataSource, collectionView,[Changeset<S>](),newSections.map { SectionModelSnapshot(model: $0, items: $0.items) }, reloadAll)
                 }
             })
-//            .map({ (event) -> (CollectionViewSectionedDataSource<S>,UICollectionView,[Changeset<S>], Element) in
-//                print("##MAP")
-//
-//
-//
-//                let (dataSource, collectionView, newSections, reloadAll) = event
-//                let oldSections = dataSource.sectionModels
-//                do {
-//                  //  dataSource.setSections(newSections)
-//                    let differences = try Diff.differencesForSectionedView(initialSections: oldSections, finalSections: newSections)
-//                    return (dataSource,collectionView,differences,newSections)
-//                }catch let e {
-//                    #if DEBUG
-//                        print("Error while calculating differences.")
-//                        rxDebugFatalError(e)
-//                    #endif
-//                    return (dataSource,collectionView,[Changeset<S>](),oldSections)
-//                }
-//            })
             .observeOn(MainScheduler.asyncInstance)
             .throttle(0.5, scheduler: MainScheduler.instance)
             .subscribe(onNext:{ event in
