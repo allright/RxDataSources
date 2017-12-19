@@ -31,16 +31,21 @@ open class RxCollectionViewSectionedAnimatedDataSource<S: AnimatableSectionModel
     /// Calculates view transition depending on type of changes
     public var decideViewTransition: DecideViewTransition
 
+    private let scheduler: ImmediateSchedulerType
+
+    
     public init(
         animationConfiguration: AnimationConfiguration = AnimationConfiguration(),
         decideViewTransition: @escaping DecideViewTransition = { _, _, _ in .animated },
         configureCell: @escaping ConfigureCell,
         configureSupplementaryView: @escaping ConfigureSupplementaryView,
         moveItem: @escaping MoveItem = { _, _, _ in () },
-        canMoveItemAtIndexPath: @escaping CanMoveItemAtIndexPath = { _, _ in false }
+        canMoveItemAtIndexPath: @escaping CanMoveItemAtIndexPath = { _, _ in false },
+        scheduler: ImmediateSchedulerType = MainScheduler.instance
         ) {
         self.animationConfiguration = animationConfiguration
         self.decideViewTransition = decideViewTransition
+        self.scheduler = scheduler
         super.init(
             configureCell: configureCell,
             configureSupplementaryView: configureSupplementaryView,
@@ -48,29 +53,85 @@ open class RxCollectionViewSectionedAnimatedDataSource<S: AnimatableSectionModel
             canMoveItemAtIndexPath: canMoveItemAtIndexPath
         )
 
-        self.partialUpdateEvent
-            // so in case it does produce a crash, it will be after the data has changed
+        self.updateEvent
+            //.observeOn(scheduler) // updateEvent already called on sheduler!
+            .scan(nil, accumulator: { (accum, updates) -> (RxCollectionViewSectionedAnimatedDataSource<S>,UICollectionView,[Changeset<S>], [SectionModelSnapshot], Bool) in
+                let (dataSource, collectionView, newSections) = updates
+
+                if let (_, _, _, sectionModels,_) = accum {
+                    NSLog("next!")
+                    let oldSections = sectionModels.map { Section(original: $0.model, items: $0.items) }
+                    do {
+                        let differences = try Diff.differencesForSectionedView(initialSections: oldSections, finalSections: newSections)
+                        let reloadAllFalse = false
+                        return (dataSource,collectionView,differences,newSections.map { SectionModelSnapshot(model: $0, items: $0.items) },reloadAllFalse)
+                    }catch let e {
+                        #if DEBUG
+                            print("Error while calculating differences.")
+                            rxDebugFatalError(e)
+                        #endif
+                        let reloadAllTrue = true
+                        return (dataSource,collectionView,[Changeset<S>](),oldSections.map { SectionModelSnapshot(model: $0, items: $0.items) }, reloadAllTrue)
+                    }
+                }else {
+                    NSLog("init!")
+                    let reloadAll = true
+                    return (dataSource, collectionView,[Changeset<S>](),newSections.map { SectionModelSnapshot(model: $0, items: $0.items) }, reloadAll)
+                }
+            })
+//            .map({ (event) -> (CollectionViewSectionedDataSource<S>,UICollectionView,[Changeset<S>], Element) in
+//                print("##MAP")
+//
+//
+//
+//                let (dataSource, collectionView, newSections, reloadAll) = event
+//                let oldSections = dataSource.sectionModels
+//                do {
+//                  //  dataSource.setSections(newSections)
+//                    let differences = try Diff.differencesForSectionedView(initialSections: oldSections, finalSections: newSections)
+//                    return (dataSource,collectionView,differences,newSections)
+//                }catch let e {
+//                    #if DEBUG
+//                        print("Error while calculating differences.")
+//                        rxDebugFatalError(e)
+//                    #endif
+//                    return (dataSource,collectionView,[Changeset<S>](),oldSections)
+//                }
+//            })
             .observeOn(MainScheduler.asyncInstance)
-            // Collection view has issues digesting fast updates, this should
-            // help to alleviate the issues with them.
             .throttle(0.5, scheduler: MainScheduler.instance)
-            .subscribe(onNext: { [weak self] event in
-                self?.collectionView(event.0, throttledObservedEvent: event.1)
+            .subscribe(onNext:{ event in
+                let (dataSource,collectionView, differences, newSections, reloadAll) = event!
+
+                if collectionView.window == nil || reloadAll {
+                    dataSource.setSections(newSections.map { Section(original: $0.model, items: $0.items) })
+                    collectionView.reloadData()
+                    return
+                }
+              
+                switch dataSource.decideViewTransition(dataSource, collectionView, differences) {
+                case .animated:
+                    for difference in differences {
+                        dataSource.setSections(difference.finalSections)
+                        collectionView.performBatchUpdates(difference, animationConfiguration: dataSource.animationConfiguration)
+                    }
+                case .reload:
+                    dataSource.setSections(newSections.map { Section(original: $0.model, items: $0.items) })
+                    collectionView.reloadData()
+                }
+                
             })
             .disposed(by: disposeBag)
     }
-
-    // For some inexplicable reason, when doing animated updates first time
-    // it crashes. Still need to figure out that one.
-    var dataSet = false
 
     private let disposeBag = DisposeBag()
 
     // This subject and throttle are here
     // because collection view has problems processing animated updates fast.
     // This should somewhat help to alleviate the problem.
-    private let partialUpdateEvent = PublishSubject<(UICollectionView, Event<Element>)>()
-
+    
+    typealias UpdateEventType = (RxCollectionViewSectionedAnimatedDataSource<S>,UICollectionView, Element)
+    private let updateEvent = PublishSubject<UpdateEventType>()
     /**
      This method exists because collection view updates are throttled because of internal collection view bugs.
      Collection view behaves poorly during fast updates, so this should remedy those issues.
@@ -110,20 +171,13 @@ open class RxCollectionViewSectionedAnimatedDataSource<S: AnimatableSectionModel
         }.on(event)
     }
 
-    open func collectionView(_ collectionView: UICollectionView, observedEvent: Event<Element>) {
-        Binder(self) { dataSource, newSections in
+    open func collectionView(_ collectionView: UICollectionView, observedEvent: Event<Element> ) {
+        Binder(self,scheduler: self.scheduler) { dataSource, newSections in
             #if DEBUG
                 self._dataSourceBound = true
             #endif
-            if !self.dataSet {
-                self.dataSet = true
-                dataSource.setSections(newSections)
-                collectionView.reloadData()
-            }
-            else {
-                let element = (collectionView, observedEvent)
-                dataSource.partialUpdateEvent.on(.next(element))
-            }
+            let updates = (dataSource, collectionView, newSections)
+            dataSource.updateEvent.on(.next(updates))
         }.on(observedEvent)
     }
 }

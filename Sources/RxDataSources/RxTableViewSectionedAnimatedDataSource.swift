@@ -73,15 +73,15 @@ open class RxTableViewSectionedAnimatedDataSource<S: AnimatableSectionModelType>
         }
     #endif
 
-    var dataSet = false
+    var initDone = false
 
     open func tableView(_ tableView: UITableView, observedEvent: Event<Element>) {
         Binder(self) { dataSource, newSections in
             #if DEBUG
                 self._dataSourceBound = true
             #endif
-            if !self.dataSet {
-                self.dataSet = true
+            if !self.initDone {
+                self.initDone = true
                 dataSource.setSections(newSections)
                 tableView.reloadData()
             }
